@@ -1,7 +1,7 @@
 WidgetMetadata = {
   id: "iptv.remote",
   title: "远程IPTV",
-  version: "1.0.0",
+  version: "1.0.1",
   requiredVersion: "0.0.1",
   description: "加载远程m3u8 IPTV源，在rex观看直播频道",
   author: "dev",
@@ -33,9 +33,6 @@ WidgetMetadata = {
   }
 };
 
-/**
- * m3u简易解析，只处理 #EXTINF 行，输出 [{title,logo,group,url}]
- */
 function parseM3u(text) {
   const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(l=>!!l);
   const items = [];
@@ -43,7 +40,6 @@ function parseM3u(text) {
   for(const line of lines) {
     if(line.startsWith("#EXTM3U")) continue;
     if(line.startsWith("#EXTINF:")) {
-      // 解析 tvg-logo group-title ,title
       let logo = "";
       let group = "默认分组";
       const logoMatch = line.match(/tvg-logo="([^"]+)"/);
@@ -66,7 +62,6 @@ function parseM3u(text) {
   return items;
 }
 
-// 获取原始m3u文本
 async function fetchM3uContent() {
   const m3uUrl = "https://raw.githubusercontent.com/AlbertMusk/iptv_rex/refs/heads/main/list.m3u";
   const res = await Widget.http.get(m3uUrl);
@@ -78,17 +73,15 @@ async function loadIptvList(params = {}) {
     const text = await fetchM3uContent();
     const channels = parseM3u(text);
     return channels.map((ch, idx)=>{
-      const link = `iptv:${idx}`;
+      // link格式 iptv:idx@@@原始url，改用@@@分隔，避免url内部有|冲突，不做encode
+      const link = `iptv:${idx}@@@${ch.url}`;
       return {
         id: String(idx),
         type: "url",
         mediaType: "tv",
         title: ch.title,
         coverUrl: ch.logo || "",
-        link: link,
-        // 把频道原始播放地址编码存入link，loadDetail/loadResource解析
-        // link格式 iptv:idx|originalUrl
-        link: `iptv:${idx}|${encodeURIComponent(ch.url)}`
+        link: link
       };
     });
   } catch(error) {
@@ -97,20 +90,20 @@ async function loadIptvList(params = {}) {
   }
 }
 
-// loadDetail：接收link字符串，type:url条目
+// loadDetail只填充详情页UI展示，不提供播放地址！播放地址交给loadResource
 async function loadDetail(link) {
   try {
-    if(!link || !link.startsWith("iptv:")) return null;
-    const parts = link.split("|");
+    if(!link || !String(link).startsWith("iptv:")) return null;
+    const parts = String(link).split("@@@");
     if(parts.length <2) return null;
-    const originalUrl = decodeURIComponent(parts[1]);
+    const originalUrl = parts[1];
     return {
       id: link,
       type: "url",
       mediaType: "tv",
       title: "IPTV直播",
-      link: link,
-      videoUrl: originalUrl
+      coverUrl: "",
+      link: link
     };
   } catch(error) {
     console.error("[loadDetail] 失败：", error.message||error);
@@ -118,16 +111,28 @@ async function loadDetail(link) {
   }
 }
 
-// loadResource type:stream，本站模块来源校验：只处理 link 以 iptv: 开头
+// loadResource：type="stream"，起播时调用，必须返回线路数组
 async function loadResource(params = {}) {
   try {
     const linkVal = params.link;
     if(!linkVal || !String(linkVal).startsWith("iptv:")) {
+      console.log("[loadResource] 拒绝非本模块link：", linkVal);
       return [];
     }
-    const parts = String(linkVal).split("|");
-    if(parts.length < 2) return [];
-    const playUrl = decodeURIComponent(parts[1]);
+    const parts = String(linkVal).split("@@@");
+    if(parts.length < 2) {
+      console.error("[loadResource] link解析失败", linkVal);
+      return [];
+    }
+    const playUrl = parts[1];
+    console.log("[loadResource] 得到播放地址：", playUrl);
+
+    // rtsp协议rex播放器支持很差，如果是rtsp直接返回空
+    if(playUrl.startsWith("rtsp://")){
+      console.warn("[loadResource] rtsp不被支持，跳过", playUrl);
+      return [];
+    }
+
     return [
       {
         name: "直播线路",
@@ -137,7 +142,7 @@ async function loadResource(params = {}) {
       }
     ];
   } catch(error) {
-    console.error("[loadResource] 失败：", error.message||error);
+    console.error("[loadResource] 异常：", error.message||error);
     return [];
   }
 }
@@ -150,7 +155,7 @@ async function searchIptv(params = {}) {
     const channels = parseM3u(text);
     const filtered = channels.filter(ch=> ch.title.toLowerCase().includes(kw));
     return filtered.map((ch, idx)=>{
-      const link = `iptv:s_${idx}|${encodeURIComponent(ch.url)}`;
+      const link = `iptv:s_${idx}@@@${ch.url}`;
       return {
         id: "s_"+idx,
         type: "url",
