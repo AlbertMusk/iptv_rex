@@ -1,11 +1,11 @@
 WidgetMetadata = {
   id: "iptv.remote",
   title: "远程IPTV",
-  version: "1.0.1",
+  version: "1.0.2",
   requiredVersion: "0.0.1",
-  description: "加载远程m3u8 IPTV源，在rex观看直播频道",
+  description: "加载远程m3u8 IPTV源，在rex观看直播频道，源：iptv.55white.xyz:8888",
   author: "dev",
-  site: "https://raw.githubusercontent.com/AlbertMusk/iptv_rex/refs/heads/main/list.m3u",
+  site: "https://iptv.55white.xyz:8888/all.m3u",
   detailCacheDuration: 30,
   modules: [
     {
@@ -33,6 +33,9 @@ WidgetMetadata = {
   }
 };
 
+/**
+ * m3u简易解析，只处理 #EXTINF 行，输出 [{title,logo,group,url}]
+ */
 function parseM3u(text) {
   const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(l=>!!l);
   const items = [];
@@ -50,11 +53,16 @@ function parseM3u(text) {
       const title = titleCommaIdx > -1 ? line.slice(titleCommaIdx+1) : "未知频道";
       meta = { title, logo, group };
     } else if(!line.startsWith("#") && meta) {
+      let url = line;
+      // 将 rtsp:// 强制替换为 https://
+      if(url.startsWith("rtsp://")) {
+        url = url.replace(/^rtsp:\/\//, "https://");
+      }
       items.push({
         title: meta.title,
         logo: meta.logo,
         group: meta.group,
-        url: line
+        url: url
       });
       meta = null;
     }
@@ -63,7 +71,7 @@ function parseM3u(text) {
 }
 
 async function fetchM3uContent() {
-  const m3uUrl = "https://raw.githubusercontent.com/AlbertMusk/iptv_rex/refs/heads/main/list.m3u";
+  const m3uUrl = "https://iptv.55white.xyz:8888/all.m3u";
   const res = await Widget.http.get(m3uUrl);
   return res.data;
 }
@@ -72,8 +80,18 @@ async function loadIptvList(params = {}) {
   try {
     const text = await fetchM3uContent();
     const channels = parseM3u(text);
+    if(!Array.isArray(channels) || channels.length === 0) {
+      console.error("[loadIptvList] 解析m3u完成，但未获取到任何频道");
+      return [{
+        id:"error",
+        type:"url",
+        mediaType:"tv",
+        title:"⚠️解析失败：未获取到频道列表",
+        coverUrl:"",
+        link:"iptv:error@@@"
+      }];
+    }
     return channels.map((ch, idx)=>{
-      // link格式 iptv:idx@@@原始url，改用@@@分隔，避免url内部有|冲突，不做encode
       const link = `iptv:${idx}@@@${ch.url}`;
       return {
         id: String(idx),
@@ -85,12 +103,18 @@ async function loadIptvList(params = {}) {
       };
     });
   } catch(error) {
-    console.error("[loadIptvList] 失败：", error.message||error);
-    throw error;
+    console.error("[loadIptvList] 获取源失败：", error.message||error);
+    return [{
+      id:"error",
+      type:"url",
+      mediaType:"tv",
+      title:"⚠️内容获取失败，无法拉取IPTV源",
+      coverUrl:"",
+      link:"iptv:error@@@"
+    }];
   }
 }
 
-// loadDetail只填充详情页UI展示，不提供播放地址！播放地址交给loadResource
 async function loadDetail(link) {
   try {
     if(!link || !String(link).startsWith("iptv:")) return null;
@@ -111,7 +135,6 @@ async function loadDetail(link) {
   }
 }
 
-// loadResource：type="stream"，起播时调用，必须返回线路数组
 async function loadResource(params = {}) {
   try {
     const linkVal = params.link;
@@ -125,14 +148,16 @@ async function loadResource(params = {}) {
       return [];
     }
     const playUrl = parts[1];
-    console.log("[loadResource] 得到播放地址：", playUrl);
-
-    // rtsp协议rex播放器支持很差，如果是rtsp直接返回空
-    if(playUrl.startsWith("rtsp://")){
-      console.warn("[loadResource] rtsp不被支持，跳过", playUrl);
+    if(!playUrl || playUrl.length === 0) {
+      console.warn("[loadResource] 播放地址为空");
       return [];
     }
-
+    // 只允许 http / https 协议
+    if(!playUrl.startsWith("http://") && !playUrl.startsWith("https://")) {
+      console.warn("[loadResource] 不支持的协议：", playUrl);
+      return [];
+    }
+    console.log("[loadResource] 得到播放地址：", playUrl);
     return [
       {
         name: "直播线路",
@@ -154,6 +179,16 @@ async function searchIptv(params = {}) {
     const text = await fetchM3uContent();
     const channels = parseM3u(text);
     const filtered = channels.filter(ch=> ch.title.toLowerCase().includes(kw));
+    if(filtered.length === 0) {
+      return [{
+        id:"search-empty",
+        type:"url",
+        mediaType:"tv",
+        title:"🔍搜索无匹配频道",
+        coverUrl:"",
+        link:"iptv:search-empty@@@"
+      }];
+    }
     return filtered.map((ch, idx)=>{
       const link = `iptv:s_${idx}@@@${ch.url}`;
       return {
@@ -167,6 +202,13 @@ async function searchIptv(params = {}) {
     });
   } catch(error) {
     console.error("[searchIptv] 搜索失败：", error.message||error);
-    throw error;
+    return [{
+      id:"search-error",
+      type:"url",
+      mediaType:"tv",
+      title:"⚠️搜索获取内容失败",
+      coverUrl:"",
+      link:"iptv:search-error@@@"
+    }];
   }
 }
