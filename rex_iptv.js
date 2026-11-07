@@ -1,12 +1,12 @@
 WidgetMetadata = {
   id: "iptv.live",
   title: "IPTV直播源",
-  version: "1.1.0",
+  version: "1.3.0",
   requiredVersion: "0.0.1",
-  description: "加载外部m3u IPTV直播源，storage缓存减少网络请求，源：raw.githubusercontent.com/AlbertMusk/iptv_rex/refs/heads/main/list.m3u",
+  description: "加载外部m3u IPTV直播源，内置调试面板，storage缓存减少网络请求，gh‑proxy代理github源",
   author: "dev",
   site: "",
-  detailCacheDuration: 60,
+  detailCacheDuration: 20,
   modules: [
     {
       id: "loadList",
@@ -50,10 +50,12 @@ WidgetMetadata = {
 };
 
 // ==========配置项==========
-const M3U_URL = "https://raw.githubusercontent.com/AlbertMusk/iptv_rex/refs/heads/main/list.m3u";
+const M3U_URL = "https://gh-proxy.org/https://raw.githubusercontent.com/AlbertMusk/iptv_rex/refs/heads/main/list.m3u";
 const M3U_CACHE_TTL = 300; // 缓存有效期，单位秒，5分钟
 const STORAGE_KEY_TEXT = "iptv_m3u_text";
 const STORAGE_KEY_TIMESTAMP = "iptv_m3u_ts";
+const STORAGE_KEY_LAST_ERROR = "iptv_last_err";
+const DEBUG_LINK_ID = "debug:info";
 
 /**
  * m3u解析器，修复group-title连字符bug
@@ -86,6 +88,16 @@ function parseM3u(text) {
 }
 
 /**
+ * 清除本地缓存
+ */
+async function clearCache() {
+  Widget.storage.remove(STORAGE_KEY_TEXT);
+  Widget.storage.remove(STORAGE_KEY_TIMESTAMP);
+  Widget.storage.remove(STORAGE_KEY_LAST_ERROR);
+  console.log("[iptv] 已清空本地m3u缓存");
+}
+
+/**
  * 获取m3u内容，优先storage缓存，过期自动重新请求
  * @returns {{ok:boolean,channels:Array,errorMsg:string}}
  */
@@ -109,9 +121,10 @@ async function fetchAllChannels() {
     const resp = await Widget.http.get(M3U_URL);
     const m3uText = resp.data || "";
 
-    // 写入storage缓存
+    // 写入storage缓存，同时清空上次错误
     Widget.storage.set(STORAGE_KEY_TEXT, m3uText);
     Widget.storage.set(STORAGE_KEY_TIMESTAMP, String(now));
+    Widget.storage.remove(STORAGE_KEY_LAST_ERROR);
 
     const channels = parseM3u(m3uText);
     return { ok: true, channels, errorMsg: "" };
@@ -119,6 +132,7 @@ async function fetchAllChannels() {
   } catch (err) {
     const msg = err?.message || String(err);
     console.error("[iptv] 获取m3u源失败:", msg);
+    Widget.storage.set(STORAGE_KEY_LAST_ERROR, msg);
     return { ok: false, channels: [], errorMsg: msg };
   }
 }
@@ -141,44 +155,41 @@ function channelToVideoItem(ch, idx) {
   };
 }
 
-/**
- * 生成提示用的占位VideoItem（网络失败/解析0频道提示）
- */
-function makeHintItem(title, desc) {
-  return {
-    id: "hint",
-    type: "url",
-    mediaType: "movie",
-    title: title,
-    coverUrl: "",
-    link: "hint:-1",
-    description: desc
-  };
-}
-
 async function loadList(params = {}) {
   try {
     const page = Number(params.page || 1);
     const res = await fetchAllChannels();
 
-    // 网络请求失败，返回提示条目
-    if (!res.ok) {
-      return [makeHintItem("⚠️获取直播源失败，请稍后重试", res.errorMsg)];
-    }
-    const allCh = res.channels;
-    // 解析成功但是0频道
-    if (allCh.length === 0) {
-      return [makeHintItem("⚠️解析m3u未得到任何频道", "源返回内容为空或者m3u格式异常")];
+    let list = [];
+    // 第一页，插入调试入口条目
+    if(page === 1){
+      list.push({
+        id: DEBUG_LINK_ID,
+        type: "url",
+        mediaType: "movie",
+        title: "🔧调试信息（点击查看）",
+        coverUrl: "",
+        link: DEBUG_LINK_ID,
+        description: "查看缓存、网络、解析状态，排查未加载资源问题"
+      });
     }
 
+    // ⚠️ 网络失败/0频道只保留调试条目，其余返回空数组
+    if (!res.ok || res.channels.length === 0) {
+      console.warn("[loadList] 无可用频道数据 ok=", res.ok, "count=", res.channels.length);
+      return list;
+    }
+
+    const allCh = res.channels;
     const pageSize = 40;
     const start = (page - 1) * pageSize;
     const pageItems = allCh.slice(start, start + pageSize);
-    return pageItems.map((ch, i) => channelToVideoItem(ch, start + i));
+    list = list.concat(pageItems.map((ch, i) => channelToVideoItem(ch, start + i)));
+    return list;
 
   } catch (error) {
     console.error("[loadList] 异常:", error.message || error);
-    throw error;
+    return [];
   }
 }
 
@@ -189,13 +200,11 @@ async function search(params = {}) {
     if (!keyword) return [];
 
     const res = await fetchAllChannels();
-    if (!res.ok) {
-      return [makeHintItem("⚠️获取直播源失败，无法搜索", res.errorMsg)];
+    if (!res.ok || res.channels.length === 0) {
+      console.warn("[search] 无可用频道");
+      return [];
     }
     const allCh = res.channels;
-    if (allCh.length === 0) {
-      return [makeHintItem("⚠️解析m3u未得到任何频道，无法搜索", "")];
-    }
 
     const filtered = allCh.filter(c => {
       const t = (c.name + " " + c.tvgName + " " + c.groupTitle).toLowerCase();
@@ -209,16 +218,60 @@ async function search(params = {}) {
 
   } catch (error) {
     console.error("[search]异常:", error.message || error);
-    throw error;
+    return [];
   }
 }
 
 async function loadDetail(link) {
   if (!link) return null;
-  // 提示占位条目直接返回基础对象
-  if (link.startsWith("hint:")) {
-    return { id: link, type: "url", title: link, link };
+
+  // =========调试详情页渲染逻辑=========
+  if(link === DEBUG_LINK_ID){
+    const now = Math.floor(Date.now() / 1000);
+    const cachedTsRaw = Widget.storage.get(STORAGE_KEY_TIMESTAMP);
+    const cachedText = Widget.storage.get(STORAGE_KEY_TEXT) || "";
+    const lastErr = Widget.storage.get(STORAGE_KEY_LAST_ERROR) || "无错误";
+    const cachedTs = Number(cachedTsRaw || 0);
+    const cacheValid = cachedText && (now - cachedTs) < M3U_CACHE_TTL;
+    const remainTtl = cacheValid ? (M3U_CACHE_TTL - (now - cachedTs)) : 0;
+    const previewText = cachedText.substring(0,800);
+    const channels = parseM3u(cachedText || "");
+
+    const debugDesc = `
+【M3U源地址】
+${M3U_URL}
+
+【缓存状态】
+缓存有效: ${cacheValid?"✅是":"❌否"}
+缓存时间戳: ${cachedTs>0?new Date(cachedTs*1000).toLocaleString():"无缓存"}
+剩余过期秒数: ${remainTtl}s
+
+【解析统计】
+解析出频道总数: ${channels.length}
+
+【最近一次错误】
+${lastErr}
+
+【M3U内容预览(前800字符)】
+${previewText}
+${cachedText.length>800?"\n......(内容已截断)":""}
+
+💡排错提示：
+1. 缓存无效=未成功下载m3u；
+2. 错误信息可以看到403/超时；
+3. rex设置清除模块存储=清空全部缓存；
+`.replace(/\n+/g,"\n");
+
+    return {
+      id: DEBUG_LINK_ID,
+      type:"url",
+      title:"🔧 IPTV模块调试面板",
+      link:DEBUG_LINK_ID,
+      description: debugDesc
+    }
   }
+
+  // 普通频道详情
   if (!link.startsWith("ch:")) return null;
   return {
     id: link,
@@ -231,8 +284,9 @@ async function loadDetail(link) {
 async function loadResource(params = {}) {
   try {
     const link = params.link;
+    // 调试面板禁止播放
+    if(link === DEBUG_LINK_ID) return [];
     if (!link || !link.startsWith("ch:")) {
-      // 提示条目hint:-1直接返回空线路，禁止播放
       return [];
     }
     const idx = parseInt(link.replace("ch:", ""), 10);
