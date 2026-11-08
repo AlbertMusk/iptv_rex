@@ -65,7 +65,7 @@ var WidgetMetadata = {
   description: '读取 all.m3u 播放列表，按分组浏览并直接播放央视频道，含台标竖版海报',
   author: 'rex',
   site: 'https://iptv.55white.xyz:8888',
-  version: '1.3.0',
+  version: '1.3.1',
   requiredVersion: '0.0.1',
   detailCacheDuration: 60,
   modules: [
@@ -249,10 +249,51 @@ async function loadList(params) {
     var page = Math.max(1, Number(params.page) || 1);
     var count = Math.max(1, Number(params.count) || 100);
     var start = (page - 1) * count;
-    return channels.slice(start, start + count).map(toVideoItem);
+    var items = channels.slice(start, start + count).map(toVideoItem);
+    await debugLoadResource(items);
+    return items;
   } catch (error) {
     console.error('[ysp.rex.live] loadList 失败:', error.message || error);
     throw error;
+  }
+}
+
+// 调试专用：rex 模块调试只能触发 loadList，这里顺带试跑 loadResource 并打印真实返回值
+async function debugLoadResource(items) {
+  if (!items || items.length === 0) return;
+  var sample = items[0];
+  console.log(
+    '[ysp.rex.live][debug] 样例列表项:',
+    JSON.stringify({
+      id: sample.id,
+      link: sample.link,
+      videoUrl: sample.videoUrl,
+      type: sample.type,
+      playerType: sample.playerType,
+    })
+  );
+
+  var probes = [
+    { label: 'link', params: { link: sample.link } },
+    { label: 'id', params: { id: sample.id } },
+    { label: 'link+id', params: { link: sample.link, id: sample.id } },
+    { label: 'link+id+videoUrl+type', params: { link: sample.link, id: sample.id, videoUrl: sample.videoUrl, type: sample.type } },
+  ];
+
+  for (var i = 0; i < probes.length; i += 1) {
+    var probe = probes[i];
+    try {
+      var result = await loadResource(probe.params);
+      console.log(
+        '[ysp.rex.live][debug] loadResource(' + probe.label + ') =>',
+        JSON.stringify(result)
+      );
+    } catch (error) {
+      console.log(
+        '[ysp.rex.live][debug] loadResource(' + probe.label + ') 抛出异常:',
+        error.message || error
+      );
+    }
   }
 }
 
