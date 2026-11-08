@@ -66,7 +66,7 @@ var WidgetMetadata = {
   description: '读取 all.m3u 播放列表，按分组浏览并直接播放央视频道，含台标竖版海报',
   author: 'rex',
   site: 'https://iptv.55white.xyz:8888',
-  version: '1.6.0',
+  version: '1.6.1',
   requiredVersion: '0.0.1',
   detailCacheDuration: 0, // 调试期不缓存详情，避免旧结果干扰
   // 直播采用「列表 → loadDetail → 播放器」链路（与可用的 live.js 一致），不声明 loadResource
@@ -264,6 +264,7 @@ function dbg(tag, payload) {
 // 调试专用：rex 模块调试只能触发 loadList，这里顺带试跑 loadDetail 并打印真实返回值
 async function debugProbe(items) {
   if (!DEBUG || !items || items.length === 0) return;
+  dbg('模块版本', WidgetMetadata.version + ' / 项数 ' + items.length);
   var sample = items[0];
   dbg('样例列表项', {
     id: sample.id,
