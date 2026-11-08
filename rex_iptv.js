@@ -4,6 +4,7 @@
 // 台标源: https://raw.githubusercontent.com/CCSH/IPTV/refs/heads/main/logo/{频道名}.png
 
 var DEFAULT_M3U_URL = 'https://iptv.55white.xyz:8888/all.m3u';
+var DEBUG = true; // 调试开关：排查完成后改为 false
 
 // 台标源与 rex 竖版海报尺寸（2:3）
 var LOGO_HOST_PATH = 'raw.githubusercontent.com/CCSH/IPTV/refs/heads/main/logo';
@@ -65,9 +66,9 @@ var WidgetMetadata = {
   description: '读取 all.m3u 播放列表，按分组浏览并直接播放央视频道，含台标竖版海报',
   author: 'rex',
   site: 'https://iptv.55white.xyz:8888',
-  version: '1.3.1',
+  version: '1.4.0',
   requiredVersion: '0.0.1',
-  detailCacheDuration: 60,
+  detailCacheDuration: 0, // 调试期不缓存详情，避免旧结果干扰
   modules: [
     createIptvModule(),
     {
@@ -258,20 +259,24 @@ async function loadList(params) {
   }
 }
 
-// 调试专用：rex 模块调试只能触发 loadList，这里顺带试跑 loadResource 并打印真实返回值
+// 调试专用：rex 模块调试只能触发 loadList，这里顺带试跑 loadDetail / loadResource 并打印真实返回值
 async function debugLoadResource(items) {
-  if (!items || items.length === 0) return;
+  if (!DEBUG || !items || items.length === 0) return;
   var sample = items[0];
-  console.log(
-    '[ysp.rex.live][debug] 样例列表项:',
-    JSON.stringify({
-      id: sample.id,
-      link: sample.link,
-      videoUrl: sample.videoUrl,
-      type: sample.type,
-      playerType: sample.playerType,
-    })
-  );
+  dbg('样例列表项', {
+    id: sample.id,
+    link: sample.link,
+    videoUrl: sample.videoUrl,
+    type: sample.type,
+    playerType: sample.playerType,
+  });
+
+  try {
+    var detail = await loadDetail(sample.link);
+    dbg('自测 loadDetail 返回值', detail ? { id: detail.id, videoUrl: detail.videoUrl, type: detail.type } : null);
+  } catch (error) {
+    dbg('自测 loadDetail 抛出', error.message || String(error));
+  }
 
   var probes = [
     { label: 'link', params: { link: sample.link } },
@@ -311,11 +316,24 @@ function parseOwnedUrl(value) {
   return match ? match[1] : null;
 }
 
+// 调试用：统一打印，便于在 rex 日志面板分辨
+function dbg(tag, payload) {
+  try {
+    console.log('[ysp.rex.live][debug] ' + tag + ':', typeof payload === 'string' ? payload : JSON.stringify(payload));
+  } catch (e) {
+    console.log('[ysp.rex.live][debug] ' + tag + ':', String(payload));
+  }
+}
+
 // 顶层详情函数：接收 link 字符串（iptv:<频道URL>），归还可播条目
 async function loadDetail(link) {
   try {
+    dbg('loadDetail 入参', String(link == null ? '' : link));
     var ownedUrl = parseOwnedLink(link);
-    if (!ownedUrl) return null; // 非本模块链接，不发起任何请求
+    if (!ownedUrl) {
+      dbg('loadDetail 校验失败(返回 null)', String(link == null ? '' : link));
+      return null; // 非本模块链接，不发起任何请求
+    }
     var url = ownedUrl;
 
     var channels = await fetchChannels({});
@@ -323,10 +341,17 @@ async function loadDetail(link) {
       return item.url === url;
     })[0];
     if (!channel) {
-      console.warn('[ysp.rex.live] loadDetail 未找到频道:', url);
+      dbg('loadDetail 未找到频道(返回 null)', url);
       return null;
     }
-    return toVideoItem(channel);
+    var detailItem = toVideoItem(channel);
+    dbg('loadDetail 返回', {
+      id: detailItem.id,
+      link: detailItem.link,
+      videoUrl: detailItem.videoUrl,
+      type: detailItem.type,
+    });
+    return detailItem;
   } catch (error) {
     console.error('[ysp.rex.live] loadDetail 失败:', error.message || error);
     throw error;
@@ -338,6 +363,18 @@ async function loadDetail(link) {
 async function loadResource(params) {
   params = params || {};
   try {
+    if (DEBUG) {
+      dbg('loadResource 被调用, 入参 keys', Object.keys(params));
+      dbg('loadResource 入参值', {
+        id: params.id,
+        link: params.link,
+        videoUrl: params.videoUrl,
+        type: params.type,
+        tmdbId: params.tmdbId,
+        season: params.season,
+        episode: params.episode,
+      });
+    }
     var hasLink = params.link != null && String(params.link) !== '';
     var raw = hasLink ? params.link : params.id;
 
