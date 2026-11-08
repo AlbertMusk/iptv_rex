@@ -66,20 +66,11 @@ var WidgetMetadata = {
   description: '读取 all.m3u 播放列表，按分组浏览并直接播放央视频道，含台标竖版海报',
   author: 'rex',
   site: 'https://iptv.55white.xyz:8888',
-  version: '1.4.0',
+  version: '1.5.0',
   requiredVersion: '0.0.1',
   detailCacheDuration: 0, // 调试期不缓存详情，避免旧结果干扰
-  modules: [
-    createIptvModule(),
-    {
-      id: 'loadResource', // 固定 id：详情页/起播时由客户端调用
-      title: '加载播放资源',
-      functionName: 'loadResource',
-      type: 'stream',
-      cacheDuration: 0,
-      params: [],
-    },
-  ],
+  // 直播采用「列表 → loadDetail → 播放器」链路（与可用的 live.js 一致），不声明 loadResource
+  modules: [createIptvModule()],
   search: {
     title: '搜索 IPTV 频道',
     functionName: 'search',
@@ -192,10 +183,10 @@ function logoName(channel) {
 }
 
 // M3U 中无 tvg-logo 时按 CCSH/IPTV 规则拼台标地址
+// 这里保留原始文件名（含中文/+），由 normalizeLogoUrl 统一编码一次，避免 %2B 被二次编码
 function buildLogoSource(channel) {
   if (channel.logo) return channel.logo;
-  var path = LOGO_HOST_PATH + '/' + encodeURIComponent(logoName(channel) + '.png');
-  return 'https://' + path;
+  return 'https://' + LOGO_HOST_PATH + '/' + logoName(channel) + '.png';
 }
 
 function normalizeLogoUrl(url, width, height) {
@@ -218,9 +209,9 @@ function toVideoItem(channel) {
     coverUrl: poster,
     posterPath: poster, // 竖图位优先，600x900 等比留白，台标完整显示
     backdropPath: normalizeLogoUrl(logoSource, BACKDROP_W, BACKDROP_H),
+    previewUrl: '',
     durationText: '直播',
-    videoUrl: channel.url,
-    link: 'iptv:' + channel.url, // 详情页路由键，由 loadDetail 解析
+    link: channel.url, // 直播地址本身作为详情键（与 live.js 一致）
     playerType: 'app',
     genreTitle: channel.group,
   };
@@ -251,69 +242,12 @@ async function loadList(params) {
     var count = Math.max(1, Number(params.count) || 100);
     var start = (page - 1) * count;
     var items = channels.slice(start, start + count).map(toVideoItem);
-    await debugLoadResource(items);
+    await debugProbe(items);
     return items;
   } catch (error) {
     console.error('[ysp.rex.live] loadList 失败:', error.message || error);
     throw error;
   }
-}
-
-// 调试专用：rex 模块调试只能触发 loadList，这里顺带试跑 loadDetail / loadResource 并打印真实返回值
-async function debugLoadResource(items) {
-  if (!DEBUG || !items || items.length === 0) return;
-  var sample = items[0];
-  dbg('样例列表项', {
-    id: sample.id,
-    link: sample.link,
-    videoUrl: sample.videoUrl,
-    type: sample.type,
-    playerType: sample.playerType,
-  });
-
-  try {
-    var detail = await loadDetail(sample.link);
-    dbg('自测 loadDetail 返回值', detail ? { id: detail.id, videoUrl: detail.videoUrl, type: detail.type } : null);
-  } catch (error) {
-    dbg('自测 loadDetail 抛出', error.message || String(error));
-  }
-
-  var probes = [
-    { label: 'link', params: { link: sample.link } },
-    { label: 'id', params: { id: sample.id } },
-    { label: 'link+id', params: { link: sample.link, id: sample.id } },
-    { label: 'link+id+videoUrl+type', params: { link: sample.link, id: sample.id, videoUrl: sample.videoUrl, type: sample.type } },
-  ];
-
-  for (var i = 0; i < probes.length; i += 1) {
-    var probe = probes[i];
-    try {
-      var result = await loadResource(probe.params);
-      console.log(
-        '[ysp.rex.live][debug] loadResource(' + probe.label + ') =>',
-        JSON.stringify(result)
-      );
-    } catch (error) {
-      console.log(
-        '[ysp.rex.live][debug] loadResource(' + probe.label + ') 抛出异常:',
-        error.message || error
-      );
-    }
-  }
-}
-
-// 严格校验本模块 link 命名空间：仅接受 iptv:http(s)://iptv.55white.xyz:8888/<slug>.m3u8
-function parseOwnedLink(link) {
-  var raw = String(link == null ? '' : link);
-  var match = raw.match(/^iptv:(https?:\/\/iptv\.55white\.xyz:8888\/[a-z0-9-]+\.m3u8)$/i);
-  return match ? match[1] : null;
-}
-
-// 兼容客户端以裸频道 URL 作为 id 传入（同样做主机名与路径白名单校验）
-function parseOwnedUrl(value) {
-  var raw = String(value == null ? '' : value);
-  var match = raw.match(/^(https?:\/\/iptv\.55white\.xyz:8888\/[a-z0-9-]+\.m3u8)$/i);
-  return match ? match[1] : null;
 }
 
 // 调试用：统一打印，便于在 rex 日志面板分辨
@@ -325,73 +259,84 @@ function dbg(tag, payload) {
   }
 }
 
-// 顶层详情函数：接收 link 字符串（iptv:<频道URL>），归还可播条目
+// 调试专用：rex 模块调试只能触发 loadList，这里顺带试跑 loadDetail 并打印真实返回值
+async function debugProbe(items) {
+  if (!DEBUG || !items || items.length === 0) return;
+  var sample = items[0];
+  dbg('样例列表项', {
+    id: sample.id,
+    link: sample.link,
+    type: sample.type,
+    playerType: sample.playerType,
+    genreTitle: sample.genreTitle,
+  });
+  try {
+    var detail = await loadDetail(sample.link);
+    dbg('自测 loadDetail 返回值', detail ? {
+      id: detail.id,
+      type: detail.type,
+      videoUrl: detail.videoUrl,
+      title: detail.title,
+    } : null);
+  } catch (error) {
+    dbg('自测 loadDetail 抛出', error.message || String(error));
+  }
+}
+
+// 严格校验频道地址：仅接受 http(s)://iptv.55white.xyz:8888/<slug>.m3u8（可带历史 iptv: 前缀）
+function parseChannelUrl(value) {
+  var raw = String(value == null ? '' : value);
+  var match = raw.match(/^(?:iptv:)?(https?:\/\/iptv\.55white\.xyz:8888\/[a-z0-9-]+\.m3u8)$/i);
+  return match ? match[1] : null;
+}
+
+// 顶层详情：接收列表项的 link（即直播地址），返回带 videoUrl 的详情条目
 async function loadDetail(link) {
   try {
-    dbg('loadDetail 入参', String(link == null ? '' : link));
-    var ownedUrl = parseOwnedLink(link);
-    if (!ownedUrl) {
-      dbg('loadDetail 校验失败(返回 null)', String(link == null ? '' : link));
-      return null; // 非本模块链接，不发起任何请求
+    var rawLink = String(link == null ? '' : link);
+    if (DEBUG) dbg('loadDetail 入参', rawLink);
+
+    var url = parseChannelUrl(rawLink);
+    if (!url) {
+      if (DEBUG) dbg('loadDetail 校验失败(返回 null)', rawLink);
+      return null; // 非本模块地址，不发起任何请求
     }
-    var url = ownedUrl;
 
     var channels = await fetchChannels({});
     var channel = channels.filter(function (item) {
       return item.url === url;
     })[0];
     if (!channel) {
-      dbg('loadDetail 未找到频道(返回 null)', url);
+      if (DEBUG) dbg('loadDetail 未找到频道(返回 null)', url);
       return null;
     }
-    var detailItem = toVideoItem(channel);
-    dbg('loadDetail 返回', {
-      id: detailItem.id,
-      link: detailItem.link,
-      videoUrl: detailItem.videoUrl,
-      type: detailItem.type,
-    });
+
+    var poster = normalizeLogoUrl(buildLogoSource(channel), POSTER_W, POSTER_H);
+    var detailItem = {
+      id: url,
+      type: 'detail', // 详情条目类型（与 live.js 一致）
+      title: channel.name,
+      description: channel.group + ' · IPTV 直播',
+      coverUrl: poster,
+      posterPath: poster,
+      backdropPath: normalizeLogoUrl(buildLogoSource(channel), BACKDROP_W, BACKDROP_H),
+      durationText: '直播',
+      genreTitle: channel.group,
+      videoUrl: url, // 播放器实际使用的地址
+      playerType: 'app',
+    };
+
+    if (DEBUG) {
+      dbg('loadDetail 返回', {
+        id: detailItem.id,
+        type: detailItem.type,
+        videoUrl: detailItem.videoUrl,
+        title: detailItem.title,
+      });
+    }
     return detailItem;
   } catch (error) {
     console.error('[ysp.rex.live] loadDetail 失败:', error.message || error);
-    throw error;
-  }
-}
-
-// 播放资源模块：详情页起播 / 切换线路时调用，返回 VideoResource[]
-// params 会自动携带 id / link / videoUrl 等上下文；本站专用，先校验归属再出源
-async function loadResource(params) {
-  params = params || {};
-  try {
-    if (DEBUG) {
-      dbg('loadResource 被调用, 入参 keys', Object.keys(params));
-      dbg('loadResource 入参值', {
-        id: params.id,
-        link: params.link,
-        videoUrl: params.videoUrl,
-        type: params.type,
-        tmdbId: params.tmdbId,
-        season: params.season,
-        episode: params.episode,
-      });
-    }
-    var hasLink = params.link != null && String(params.link) !== '';
-    var raw = hasLink ? params.link : params.id;
-
-    // 高优先级 link 已提供但不合法时不得回退 id 兜底
-    var url = hasLink ? parseOwnedLink(raw) : parseOwnedUrl(raw);
-    if (!url) return []; // 非本站条目，返回空数组且不发请求
-
-    return [
-      {
-        name: '央视频直播',
-        description: 'HLS · m3u8 · 延迟约 20 秒',
-        url: url,
-        playerType: 'app',
-      },
-    ];
-  } catch (error) {
-    console.error('[ysp.rex.live] loadResource 失败:', error.message || error);
     throw error;
   }
 }
