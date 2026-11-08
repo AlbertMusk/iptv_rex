@@ -94,9 +94,49 @@ function toVideoItem(ch) {
     id: `ysp:${ch.slug}`,
     type: "url",
     title: ch.title,
+    link: `ysp:${ch.slug}`, // 详情页路由键，由 loadDetail 解析
     videoUrl: `${BASE}/${ch.slug}.m3u8`,
     description: `${ch.category} · 直播`,
   };
+}
+
+// 严格校验本模块的 link 命名空间（ysp:<slug>），合法返回 slug，否则返回 null
+function parseOwnedLink(link) {
+  const s = String(link == null ? "" : link);
+  const m = s.match(/^ysp:([a-z0-9-]+)$/);
+  return m ? m[1] : null;
+}
+
+// 顶层详情函数：接收 link 字符串（非 params 对象），返回带 videoUrl 的 VideoItem
+async function loadDetail(link) {
+  try {
+    const slug = parseOwnedLink(link);
+    if (!slug) return null; // 非本模块链接，不发起任何请求
+
+    // 聚合条目
+    if (slug === "all") {
+      return {
+        id: "ysp:all",
+        type: "url",
+        title: "央视频全频道聚合",
+        link: "ysp:all",
+        videoUrl: ALL_M3U_URL,
+        description: "63 路频道一次导入，播放器内切换",
+      };
+    }
+
+    // 普通频道：在列表中核对身份后再出源，未匹配到返回 null
+    const channels = await fetchChannels();
+    const ch = channels.find((c) => c.slug === slug);
+    if (!ch) {
+      console.warn(`${PREFIX} loadDetail 未找到频道: ${slug}`);
+      return null;
+    }
+    return toVideoItem(ch);
+  } catch (error) {
+    console.error(`${PREFIX} loadDetail 失败:`, error.message || error);
+    throw error;
+  }
 }
 
 // 频道列表模块
@@ -121,6 +161,7 @@ async function loadAll(params = {}) {
         id: "ysp:all",
         type: "url",
         title: "央视频全频道聚合",
+        link: "ysp:all",
         videoUrl: ALL_M3U_URL,
         description: "63 路频道一次导入，播放器内切换",
       },
