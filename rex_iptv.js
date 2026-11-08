@@ -66,7 +66,7 @@ var WidgetMetadata = {
   description: '读取 all.m3u 播放列表，按分组浏览并直接播放央视频道，含台标竖版海报',
   author: 'rex',
   site: 'https://iptv.55white.xyz:8888',
-  version: '1.5.0',
+  version: '1.6.0',
   requiredVersion: '0.0.1',
   detailCacheDuration: 0, // 调试期不缓存详情，避免旧结果干扰
   // 直播采用「列表 → loadDetail → 播放器」链路（与可用的 live.js 一致），不声明 loadResource
@@ -198,6 +198,7 @@ function normalizeLogoUrl(url, width, height) {
     '&fit=contain&cbg=00000000&output=png';
 }
 
+// 列表项字段严格对齐可用的 live.js：id/link 均为直播地址，只保留展示必需字段
 function toVideoItem(channel) {
   var logoSource = buildLogoSource(channel);
   var poster = normalizeLogoUrl(logoSource, POSTER_W, POSTER_H);
@@ -206,14 +207,15 @@ function toVideoItem(channel) {
     type: 'url',
     title: channel.name,
     description: channel.group + ' · IPTV 直播',
-    coverUrl: poster,
     posterPath: poster, // 竖图位优先，600x900 等比留白，台标完整显示
     backdropPath: normalizeLogoUrl(logoSource, BACKDROP_W, BACKDROP_H),
     previewUrl: '',
-    durationText: '直播',
-    link: channel.url, // 直播地址本身作为详情键（与 live.js 一致）
-    playerType: 'app',
-    genreTitle: channel.group,
+    link: channel.url, // 直播地址本身作为详情键
+    metadata: {
+      group: channel.group,
+      tvgName: channel.tvgName || channel.name,
+      tvgId: channel.id && channel.id !== channel.url ? channel.id : '',
+    },
   };
 }
 
@@ -267,8 +269,8 @@ async function debugProbe(items) {
     id: sample.id,
     link: sample.link,
     type: sample.type,
-    playerType: sample.playerType,
-    genreTitle: sample.genreTitle,
+    group: sample.metadata && sample.metadata.group,
+    keys: Object.keys(sample),
   });
   try {
     var detail = await loadDetail(sample.link);
@@ -317,13 +319,14 @@ async function loadDetail(link) {
       type: 'detail', // 详情条目类型（与 live.js 一致）
       title: channel.name,
       description: channel.group + ' · IPTV 直播',
-      coverUrl: poster,
       posterPath: poster,
       backdropPath: normalizeLogoUrl(buildLogoSource(channel), BACKDROP_W, BACKDROP_H),
-      durationText: '直播',
-      genreTitle: channel.group,
       videoUrl: url, // 播放器实际使用的地址
-      playerType: 'app',
+      customHeaders: {
+        Referer: url,
+        'User-Agent': 'AptvPlayer/1.4.6',
+      },
+      childItems: [],
     };
 
     if (DEBUG) {
