@@ -65,10 +65,20 @@ var WidgetMetadata = {
   description: '读取 all.m3u 播放列表，按分组浏览并直接播放央视频道，含台标竖版海报',
   author: 'rex',
   site: 'https://iptv.55white.xyz:8888',
-  version: '1.2.0',
+  version: '1.3.0',
   requiredVersion: '0.0.1',
   detailCacheDuration: 60,
-  modules: [createIptvModule()],
+  modules: [
+    createIptvModule(),
+    {
+      id: 'loadResource', // 固定 id：详情页/起播时由客户端调用
+      title: '加载播放资源',
+      functionName: 'loadResource',
+      type: 'stream',
+      cacheDuration: 0,
+      params: [],
+    },
+  ],
   search: {
     title: '搜索 IPTV 频道',
     functionName: 'search',
@@ -253,6 +263,13 @@ function parseOwnedLink(link) {
   return match ? match[1] : null;
 }
 
+// 兼容客户端以裸频道 URL 作为 id 传入（同样做主机名与路径白名单校验）
+function parseOwnedUrl(value) {
+  var raw = String(value == null ? '' : value);
+  var match = raw.match(/^(https?:\/\/iptv\.55white\.xyz:8888\/[a-z0-9-]+\.m3u8)$/i);
+  return match ? match[1] : null;
+}
+
 // 顶层详情函数：接收 link 字符串（iptv:<频道URL>），归还可播条目
 async function loadDetail(link) {
   try {
@@ -271,6 +288,32 @@ async function loadDetail(link) {
     return toVideoItem(channel);
   } catch (error) {
     console.error('[ysp.rex.live] loadDetail 失败:', error.message || error);
+    throw error;
+  }
+}
+
+// 播放资源模块：详情页起播 / 切换线路时调用，返回 VideoResource[]
+// params 会自动携带 id / link / videoUrl 等上下文；本站专用，先校验归属再出源
+async function loadResource(params) {
+  params = params || {};
+  try {
+    var hasLink = params.link != null && String(params.link) !== '';
+    var raw = hasLink ? params.link : params.id;
+
+    // 高优先级 link 已提供但不合法时不得回退 id 兜底
+    var url = hasLink ? parseOwnedLink(raw) : parseOwnedUrl(raw);
+    if (!url) return []; // 非本站条目，返回空数组且不发请求
+
+    return [
+      {
+        name: '央视频直播',
+        description: 'HLS · m3u8 · 延迟约 20 秒',
+        url: url,
+        playerType: 'app',
+      },
+    ];
+  } catch (error) {
+    console.error('[ysp.rex.live] loadResource 失败:', error.message || error);
     throw error;
   }
 }
